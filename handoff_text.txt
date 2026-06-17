@@ -1,0 +1,343 @@
+PROJECT HANDOFF DOCUMENT
+Company Growth Prediction & Surplus Reallocation System
+Prepared for: New Chat Context  |  Date: June 2026
+1. Project Overview
+This project builds a data-driven financial management system for a company that wants to:
+Predict future revenue, costs, and profit/loss using historical data
+Track employee attendance and automatically compute salary deductions
+Calculate monthly surplus funds from attendance deductions and cost underspend
+Intelligently reallocate surplus funds to internal needs (projects, reserves, loan repayment)
+Reduce or eliminate dependency on external loans from Company B
+Core Philosophy
+Rather than borrowing from Company B when funds run short, the system identifies recoverable money (e.g. salary deductions from late-coming employees, budget underspend) and reroutes it to where it is needed — making the company self-sufficient.
+2. Attendance & Salary Deduction Rule
+2.1 The Rule
+Each employee is allowed up to 7 late arrivals per month at no penalty. From the 8th late arrival onward, each additional late day deducts 1 day from their effective attendance, which directly reduces their salary for that month.
+2.2 Formula
+Penalty_Days         = max(0, late_count - 7)
+Effective_Attendance = Total_Days_in_Month - Penalty_Days
+Adjusted_Salary      = (Base_Salary / Total_Days) * Effective_Attendance
+Deduction            = Base_Salary - Adjusted_Salary
+2.3 Example
+Late Count
+Penalty Days
+Effective Attendance (30-day month)
+Salary Deducted
+5 days late
+0 (under threshold)
+30 days
+₹0 deducted
+7 days late
+0 (at threshold)
+30 days
+₹0 deducted
+8 days late
+1 day
+29 days
+1/30 of base salary
+10 days late
+3 days
+27 days
+3/30 of base salary
+12 days late
+5 days
+25 days
+5/30 of base salary
+2.4 Python Implementation
+def calculate_effective_attendance(total_days, late_count, allowed_late=7):
+    penalty = max(0, late_count - allowed_late)
+    return total_days - penalty
+def calculate_salary(base_salary, total_days, late_count, allowed_late=7):
+    eff_att = calculate_effective_attendance(total_days, late_count, allowed_late)
+    adjusted = (base_salary / total_days) * eff_att
+    return adjusted, eff_att
+The total salary deductions across all employees each month feeds directly into the Surplus Calculator as recovered funds.
+3. Data Requirements
+3.1 Available Data
+1 full year of daily/monthly company data (2025)
+This is the training baseline for the prediction model
+As new months pass, the model retrains on the growing dataset (adaptive/dynamic)
+3.2 Required CSV Files
+File
+Key Columns
+Notes
+attendance.csv
+employee_id, date, late_count, base_salary
+Daily or monthly aggregated
+revenue.csv
+date, revenue
+Monthly, date as YYYY-MM-01
+costs.csv
+date, operating_cost, category
+Monthly, split by cost category if possible
+3.3 CSV Format Example (revenue.csv)
+date,revenue
+2025-01-01,520000
+2025-02-01,535000
+2025-03-01,498000
+...
+3.4 Loading Data in Python
+import pandas as pd
+df = pd.read_csv('data/raw/revenue.csv', parse_dates=['date'], index_col='date')
+df = df.asfreq('MS')   # 'MS' = Month Start frequency — critical for SARIMA/Prophet
+series = df['revenue']
+Important Note on Data Quantity
+With only 12 months of data, SARIMA and LSTM are NOT viable. The chosen model is Multivariate Linear Regression — it works reliably with 12 data points and is fully interpretable. As data grows past 24 months, the pipeline will auto-upgrade to SARIMA or Prophet.
+4. Forecasting Model Selection
+4.1 Model Comparison
+Model
+Min Data Needed
+Handles Seasonality
+Chosen?
+Reason
+Linear Regression
+~6+ months
+No (use month feature)
+YES — PRIMARY
+Works with 12 pts, interpretable, reliable
+ARIMA
+24–36 months
+No
+No
+Needs more history, no seasonality
+SARIMA
+36+ months (m=12)
+Yes
+Future upgrade
+Best at 36+ months of monthly data
+Prophet
+24+ months
+Yes (auto)
+Future upgrade
+Needs 2+ full yearly cycles
+LSTM
+100s of points
+Learned
+No
+Completely impractical with 12 months
+4.2 Adaptive Model Upgrade Path
+if len(monthly_data) < 24:
+    model = LinearRegression()          # current phase
+elif len(monthly_data) < 36:
+    model = ARIMA(order=(1,1,1))        # no seasonality yet
+else:
+    model = SARIMAX(order=(1,1,1),      # full seasonal model
+                    seasonal_order=(1,1,1,12))
+4.3 Prediction Target & Features
+Target variable: next month's predicted surplus
+Feature
+Description
+previous_month_surplus
+Lag-1 surplus — most predictive single feature
+total_salary_deductions
+Sum of all attendance-based deductions this month
+num_employees_over_threshold
+Count of employees with 8+ late days
+operating_cost_variance
+Actual cost minus budgeted cost (negative = underspend = surplus)
+revenue_vs_target
+Actual revenue minus revenue target
+month_number
+1–12 integer, captures any within-year pattern
+5. Surplus Calculator
+5.1 Definition
+Monthly_Surplus = Salary_Deductions + Cost_Underspend - Cost_Overspend
+Where:
+Salary_Deductions = sum of all individual employee deductions (from attendance module)
+Cost_Underspend = max(0, budgeted_cost - actual_cost) — money saved vs plan
+Cost_Overspend = max(0, actual_cost - budgeted_cost) — money spent over plan (reduces surplus)
+5.2 Python Implementation
+def compute_monthly_surplus(salary_deductions, budgeted_cost, actual_cost):
+    underspend = max(0, budgeted_cost - actual_cost)
+    overspend  = max(0, actual_cost - budgeted_cost)
+    surplus    = salary_deductions + underspend - overspend
+    return surplus
+6. Surplus Reallocation Engine
+6.1 Priority Tiers
+Priority
+Destination
+Rule
+1 — FIRST
+Emergency Reserve
+Top up to reserve_target before anything else
+2 — SECOND
+Loan Repayment (Company B)
+50% of remaining after reserve
+3 — THIRD
+Active Project Funding
+Remaining split by project weight
+4 — FOURTH
+R&D / Discretionary
+Only if surplus remains after above
+6.2 Python Implementation
+def allocate_surplus(predicted_surplus, priorities, current_reserve, reserve_target):
+    allocation = {}
+    remaining  = predicted_surplus
+    # Priority 1: Emergency Reserve
+    reserve_gap        = max(0, reserve_target - current_reserve)
+    allocation['reserve'] = min(remaining, reserve_gap)
+    remaining         -= allocation['reserve']
+    # Priority 2: Loan Repayment
+    loan_amount           = remaining * priorities.get('loan_fraction', 0.5)
+    allocation['loan']    = loan_amount
+    remaining            -= loan_amount
+    # Priority 3 & 4: Projects (proportional to weight)
+    for project, weight in priorities.get('projects', {}).items():
+        allocation[project] = remaining * weight
+    return allocation
+6.3 Config Values (shared/config.py)
+ALLOWED_LATE_DAYS       = 7
+WORKING_DAYS_PER_MONTH  = 30
+RESERVE_TARGET          = 100000   # minimum emergency reserve (adjust to company scale)
+LOAN_REPAYMENT_FRACTION = 0.5      # 50% of post-reserve surplus goes to loan repayment
+PROJECT_WEIGHTS         = {
+    'project_alpha': 0.3,
+    'project_beta' : 0.2,
+}
+7. Repository Structure
+Single shared repository. Two developers (Person A and Person B) work in separate branches and merge into main when modules are tested.
+company_surplus/
+│
+├── data/
+│   ├── raw/
+│   │   ├── attendance.csv
+│   │   ├── revenue.csv
+│   │   └── costs.csv
+│   └── processed/
+│       └── monthly_surplus.csv     ← Person A output / Person B input
+│
+├── person_a/                        ← Data & Prediction Engine
+│   ├── data_cleaning.py             ← load, clean, handle missing values/outliers
+│   ├── attendance_module.py         ← salary deduction logic
+│   ├── surplus_calculator.py        ← compute monthly surplus
+│   └── prediction_model.py          ← linear regression → predicted_surplus
+│
+├── person_b/                        ← Allocation & Reporting Engine
+│   ├── allocation_engine.py         ← rule-based reallocation logic
+│   ├── loan_tracker.py              ← track Company B loan reduction over time
+│   └── dashboard.py                 ← charts/tables/monthly reports
+│
+├── shared/
+│   ├── config.py                    ← all constants, thresholds, weights (both edit)
+│   └── utils.py                     ← shared helper functions
+│
+├── main.py                          ← runs full pipeline end to end
+├── requirements.txt
+└── README.md
+8. Team Division of Work
+Person A — Data & Prediction Engine
+File
+Responsibility
+data_cleaning.py
+Load CSVs, parse dates, handle missing values, flag 2020-21 anomalies if present
+attendance_module.py
+Implement deduction logic, monthly_salary_cost() function, per-employee detail output
+surplus_calculator.py
+Combine deductions + cost variance → monthly_surplus.csv
+prediction_model.py
+Engineer features, train Linear Regression, predict next month surplus, output MAE/RMSE/MAPE
+Person B — Allocation & Reporting Engine
+File
+Responsibility
+allocation_engine.py
+Implement allocate_surplus() with priority tiers, read predicted_surplus from Person A output
+loan_tracker.py
+Maintain running total of loan repayments, project when Company B dependency reaches zero
+dashboard.py
+Monthly bar charts (allocation breakdown), line chart (loan balance over time), summary tables
+config.py (shared)
+Define and maintain all constants — both developers coordinate here
+Integration Point
+# Person A writes:
+monthly_surplus.csv   →  date, actual_surplus, predicted_surplus
+# Person B reads:
+df = pd.read_csv('data/processed/monthly_surplus.csv')
+predicted = df['predicted_surplus'].iloc[-1]
+plan = allocate_surplus(predicted, priorities, current_reserve, RESERVE_TARGET)
+Git Workflow
+main branch — stable, tested code only. Never push broken code here.
+person-a branch — Person A's development branch
+person-b branch — Person B's development branch
+Merge to main via pull request once each module passes basic tests
+9. Full Data Flow
+attendance.csv  ──┐
+revenue.csv     ──┤──→  data_cleaning.py
+costs.csv       ──┘           │
+                              ↓
+                    attendance_module.py
+                    (salary deductions)
+                              │
+                              ↓
+                    surplus_calculator.py
+                    (monthly_surplus.csv)
+                              │
+                    ┌─────────┴──────────┐
+                    ↓                    ↓
+           prediction_model.py    allocation_engine.py
+           (predicted_surplus)    (reallocation plan)
+                    │                    │
+                    └──────────┬─────────┘
+                               ↓
+                         dashboard.py
+                    (reports + loan tracker)
+10. Requirements
+Python packages (requirements.txt)
+pandas
+numpy
+scikit-learn
+statsmodels          # for future ARIMA/SARIMA upgrade
+prophet              # for future Prophet upgrade
+matplotlib
+seaborn              # optional, for dashboard styling
+Install
+pip install -r requirements.txt --break-system-packages
+11. Recommended Build Order
+Follow this order to avoid integration blockers:
+Step
+Person
+Task
+Output
+1
+Both
+Agree on CSV column names and formats in config.py
+Shared data contract
+2
+A
+data_cleaning.py — load and validate CSVs
+Clean DataFrames
+3
+A
+attendance_module.py — deduction logic
+monthly_salary_cost() function
+4
+A
+surplus_calculator.py — combine deductions + cost variance
+monthly_surplus.csv
+5
+B
+allocation_engine.py — priority-based allocator
+allocate_surplus() function
+6
+A
+prediction_model.py — Linear Regression on surplus features
+predicted_surplus value
+7
+B
+loan_tracker.py — running loan balance tracker
+Loan reduction timeline
+8
+B
+dashboard.py — charts and summary tables
+Monthly report output
+9
+Both
+main.py — wire all modules together end to end
+Full working pipeline
+12. Key Design Decisions Already Made
+Linear Regression (multivariate). Chosen specifically because only 1 year (12 months) of data is available. Upgrade path to SARIMA/Prophet is built into the architecture.: Model choice
+Not used for core forecasting. May optionally add Isolation Forest for anomaly detection on monthly data (e.g. flag COVID-era-style disruptions) as a preprocessing step.: Unsupervised learning
+7 allowed late days per month. The 8th onward triggers -1 effective attendance day per late day. This is hardcoded in config.py as ALLOWED_LATE_DAYS = 7.: Attendance threshold
+Reserve first → Loan repayment second (50% of remaining) → Projects third. This order is fixed in allocation_engine.py but weights are configurable in config.py.: Reallocation priority
+Single shared repo, two branches (person-a, person-b), merge to main when stable.: Repository
+Daily attendance data, monthly aggregation for forecasting. monthly_surplus.csv is the canonical handoff file between Person A and Person B.: Data granularity
+End of Handoff Document — Company Growth Prediction & Surplus Reallocation System
