@@ -30,7 +30,7 @@ def get_pressure_band(fpi):
         return "GREEN",  "No action needed — self sufficient"
     elif fpi < 0.50:
         return "YELLOW", "Mild pressure — monitor closely"
-    elif lpi < 0.75:
+    elif fpi < 0.75:
         return "ORANGE", "High pressure — reduce core team to 4%"
     else:
         return "RED",    "Critical — reduce core team to 3%, accelerate projects"
